@@ -89,31 +89,201 @@ Token payload: `{ userId: string, role: "student" | "admin" }`
 
 ## Event-Driven Architecture
 
-### Odyssey Saga
+### Overview
 
-The learning journey is a Kafka saga internal to odyssey. Each step consumes one event and produces the next:
+dune-lab uses two forms of messaging:
+
+| Form | Used for | Guarantee |
+|------|----------|-----------|
+| **Kafka** (odyssey saga) | Async state advancement — each step triggers the next | At-least-once |
+| **Kafka** (atreides) | Domain events broadcast to future consumers | At-least-once |
+| **Node.js EventEmitter** (in-process) | Push saga state to SSE clients within the same process | In-memory, sync |
+
+---
+
+### Odyssey Saga — How It Works
+
+The learning journey is a **self-advancing Kafka saga** internal to odyssey. No external service triggers any step — odyssey consumes its own events, advances state, and publishes the next event.
 
 ```
-journeyInitiated
-  → diagnosticTriggered
-  → diagnosticCompleted
-  → analysisStarted
-  → analysisFinished
-  → curriculumGenerated
-  → contentDispatched
-  → studentEngagementReceived
-  → progressMilestoneReached
-  → (journey complete)
+POST /journeys
+  └─► INSERT journey (status: active, currentStep: JOURNEY_INITIATED)
+  └─► INSERT journey_initiated
+  └─► publish journeyInitiated { eventId, journeyId }
+          │
+          ▼
+  [consumer: journeyInitiated]
+    └─► INSERT diagnostic_triggered
+    └─► UPDATE journey.currentStep = DIAGNOSTIC_TRIGGERED
+    └─► emit SSE update
+    └─► publish diagnosticTriggered { eventId, journeyId }
+          │
+          ▼
+  [consumer: diagnosticTriggered]
+    └─► INSERT diagnostic_completed
+    └─► UPDATE journey.currentStep = DIAGNOSTIC_COMPLETED
+    └─► emit SSE update
+    └─► publish diagnosticCompleted { eventId, journeyId }
+          │
+         ...
+          │
+          ▼
+  [consumer: progressMilestoneReached]
+    └─► INSERT journey_completed
+    └─► UPDATE journey.currentStep = JOURNEY_COMPLETED
+    └─► UPDATE journey.status = completed
+    └─► emit SSE update
+    └─► (no further publish — saga ends)
 ```
 
-**At-least-once delivery**: Kafka guarantees each message is processed at least once. Each step is designed to be idempotent.
+---
+
+### The Event Envelope
+
+Every Kafka message in the saga carries a minimal payload:
+
+```ts
+{ eventId: UUID, journeyId: UUID }
+```
+
+`eventId` is the ID of the **previous** step's DB record. The consumer uses it to look up the previous step before inserting the next — guaranteeing the chain is never broken.
+
+---
+
+### Step Pattern — Idempotency by Design
+
+Every saga controller follows the same structure:
+
+```ts
+export const journeyStarted = asyncFn(Event, async (event) => {
+  // 1. Verify the previous step exists in DB
+  const previous = await findById(event.eventId);             // journeyInitiated record
+  if (!previous) throw new NotFoundError('...');
+
+  // 2. Check if this step was already processed (idempotency guard)
+  const existing = await diagnosticTriggeredDb.findById(event.eventId);
+  if (existing) {
+    await sideEffect(buildEvent({ journeyId: existing.journeyId, eventId: existing.id }));
+    return;  // already done — just re-publish and exit
+  }
+
+  // 3. Insert the next step record
+  const current = await diagnosticTriggeredDb.insert(buildEventRecord(event));
+
+  // 4. Advance the journey state
+  await journeyDb.updateStep(
+    buildJourneyStepUpdate({ id: previous.journeyId, currentStep: 'DIAGNOSTIC_TRIGGERED' }),
+  );
+
+  // 5. Push update to SSE clients (in-process)
+  journeyEventBus.emit(previous.journeyId, {
+    id: previous.journeyId,
+    currentStep: 'DIAGNOSTIC_TRIGGERED',
+    status: 'active',
+  });
+
+  // 6. Publish next Kafka event
+  await sideEffect(buildEvent({ journeyId: current.journeyId, eventId: current.id }));
+});
+```
+
+**Why it's idempotent**: step 2 checks if the next DB record already exists. If Kafka delivers the message twice (at-least-once semantics), the second delivery is a no-op — it just re-publishes and returns. No duplicate inserts, no duplicate state transitions.
+
+**`sideEffect` isolation**: the `publish()` call is wrapped in a separate `asyncFn` called `sideEffect`. This makes the outbound Kafka publish visually distinct from the state mutation. If the process crashes between insert and publish, the saga can be recovered via `POST /journeys/republish`.
+
+---
+
+### Saga Steps Reference
+
+| Step | Consumes | Inserts | Next publish | Journey state |
+|------|----------|---------|--------------|---------------|
+| journeyStarted | `journeyInitiated` | `diagnostic_triggered` | `diagnosticTriggered` | `DIAGNOSTIC_TRIGGERED` |
+| diagnosticTriggered | `diagnosticTriggered` | `diagnostic_completed` | `diagnosticCompleted` | `DIAGNOSTIC_COMPLETED` |
+| diagnosticCompleted | `diagnosticCompleted` | `analysis_started` | `analysisStarted` | `ANALYSIS_STARTED` |
+| analysisStarted | `analysisStarted` | `analysis_finished` | `analysisFinished` | `ANALYSIS_FINISHED` |
+| analysisFinished | `analysisFinished` | `curriculum_generated` | `curriculumGenerated` | `CURRICULUM_GENERATED` |
+| curriculumGenerated | `curriculumGenerated` | `content_dispatched` | `contentDispatched` | `CONTENT_DISPATCHED` |
+| contentDispatched | `contentDispatched` | `student_engagement_received` | `studentEngagementReceived` | `STUDENT_ENGAGEMENT_RECEIVED` |
+| studentEngagementReceived | `studentEngagementReceived` | `progress_milestone_reached` | `progressMilestoneReached` | `PROGRESS_MILESTONE_REACHED` |
+| progressMilestoneReached | `progressMilestoneReached` | `journey_completed` | — | `JOURNEY_COMPLETED` / `completed` |
+
+---
+
+### Real-Time SSE — In-Process Event Bus
+
+Each saga step calls `journeyEventBus.emit()` **after** writing to the database. This is a Node.js `EventEmitter` used as an in-process pub/sub:
+
+```ts
+// wire/journey-event-bus.ts
+const bus = new EventEmitter();
+
+export function emit(journeyId: string, update: JourneyUpdate): void {
+  bus.emit(journeyId, update);
+}
+
+export function on(journeyId: string, cb: (update: JourneyUpdate) => void): void {
+  bus.on(journeyId, cb);
+}
+```
+
+The SSE route subscribes to this bus per `journeyId`:
+
+```ts
+// diplomat/http-server/journey-stream.ts
+sseRoute('/journeys/:journeyId/stream', async ({ journeyId }, _query, send, signal) => {
+  const listener = (update) => send(update);
+  journeyEventBus.on(journeyId, listener);
+
+  await new Promise<void>((resolve) => {
+    signal.addEventListener('abort', () => {
+      journeyEventBus.off(journeyId, listener);
+      resolve();
+    });
+  });
+});
+```
+
+When a saga step completes, the browser receives the new state immediately — no polling required.
+
+> **Limitation**: the in-process bus only works when the browser and the saga consumer run in the same process instance. In a horizontally-scaled deployment, a Redis pub/sub or Kafka-backed SSE gateway would be needed.
+
+---
+
+### Stuck Journey Recovery — `POST /journeys/republish`
+
+If odyssey crashes between a DB insert and the Kafka publish, the journey becomes stuck — state is in the DB but no Kafka message drives it forward.
+
+`republishStuckJourneys` resolves this:
+
+```
+1. Load all active journeys
+2. For each journey still at JOURNEY_INITIATED:
+   - If journeyInitiated record exists → re-publish { eventId, journeyId }
+   - If journeyInitiated record does NOT exist → create it, then publish
+3. Return { republished: N }
+```
+
+This is safe to call at any time — the idempotency guard in each consumer ensures no duplicate state transitions even if the journey was not actually stuck.
+
+---
+
+### Kafka Consumer Groups
+
+Each saga topic has its own consumer group, named `student-journey-<eventName>`. This means:
+
+- Each step is independent — a slow consumer on `diagnosticCompleted` doesn't block `journeyInitiated`
+- Each group has its own committed offset — safe to restart individual consumers
+
+---
 
 ### Atreides Events
 
-| Event | Trigger | Available to |
-|-------|---------|--------------|
-| `userCreated` | User registers | Future consumers |
-| `mailConfirmed` | Email verified | Future consumers |
+| Event (topic) | Trigger | Payload |
+|---------------|---------|---------|
+| `userCreated` | `POST /users` | `{ userId, email, role }` |
+| `mailConfirmed` | `POST /users/confirm-email` | `{ userId, email }` |
+
+These events are published to Kafka and available for any future consumer. No current service subscribes to them.
 
 ---
 
