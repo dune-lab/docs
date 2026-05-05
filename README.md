@@ -407,16 +407,79 @@ absent_over_time({service="odyssey"}[3m])
 
 ## Shared Libraries (`@enxoval/*`)
 
-All services are built on a common set of internal packages:
+All services are built on a common set of internal packages, maintained in [dune-lab/enxoval](https://github.com/dune-lab/enxoval) and published to npm under the `@enxoval` scope.
 
-| Package | Description |
-|---------|-------------|
-| `@enxoval/auth` | JWT Bearer middleware for Fastify |
-| `@enxoval/db` | TypeORM wrapper — `defineEntity`, migrations, data source |
-| `@enxoval/http` | Fastify wrapper — `listen`, `get`, `post`, `AppError` hierarchy |
-| `@enxoval/messaging` | Kafka wrapper — `subscribe`, `publish`, `publishRaw`, retry + DLQ |
-| `@enxoval/observability` | Pino logger — structured JSON, `service` label |
-| `@enxoval/types` | Schema validation — `createSchema`, `field.*`, `asyncFn`, `fn` |
+| Package | Version | Description |
+|---------|---------|-------------|
+| `@enxoval/types` | 1.0.24 | Schema validation — `createSchema`, `field.*`, `asyncFn`, `fn`, branded UUID |
+| `@enxoval/http` | 1.0.26 | Fastify wrapper — `listen`, `get`, `post`, `AppError` hierarchy |
+| `@enxoval/db` | 1.0.3 | TypeORM wrapper — `defineEntity`, migrations, data source |
+| `@enxoval/messaging` | 1.0.2 | Kafka wrapper — `subscribe`, `publish`, `publishRaw`, retry + DLQ |
+| `@enxoval/auth` | 1.0.2 | JWT Bearer middleware for Fastify |
+| `@enxoval/observability` | 1.0.2 | Pino logger — structured JSON, `service` label |
+
+### Bump Flow — How `@enxoval/*` updates reach services
+
+Versioning is tag-driven. Every push of a `v*` tag to `dune-lab/enxoval` triggers a three-job pipeline:
+
+```
+git tag v1.0.25
+git push origin v1.0.25
+        │
+        ▼
+[job: publish]
+  Build all packages
+  Publish to npm (skips already-published versions)
+        │
+        ▼
+[job: discover]
+  Scan all dune-lab/* repos for @enxoval/* in package.json
+  Output: ["odyssey", "imperium", "atreides", "persona", "janus"]
+        │
+        ▼
+[job: bump] (matrix — one job per repo, runs in parallel)
+  For each repo:
+    ├── npm install @enxoval/types@1.0.25 @enxoval/http@1.0.26 ...
+    │   (only packages that already appear as a dependency)
+    ├── git checkout -b chore/bump-enxoval-v1.0.25
+    ├── git commit package.json package-lock.json
+    └── gh pr create → "chore: bump @enxoval/* to v1.0.25"
+```
+
+**Result**: every service repo gets a ready-to-merge PR within minutes of the tag push.
+
+```
+dune-lab/odyssey  ← PR: chore/bump-enxoval-v1.0.25
+dune-lab/imperium ← PR: chore/bump-enxoval-v1.0.25
+dune-lab/atreides ← PR: chore/bump-enxoval-v1.0.25
+dune-lab/persona  ← PR: chore/bump-enxoval-v1.0.25
+dune-lab/janus    ← PR: chore/bump-enxoval-v1.0.25
+```
+
+**Key behaviors:**
+- Only repos with `@enxoval/*` in `dependencies` or `devDependencies` are targeted — the discover job reads `package.json` via GitHub API before running any bump
+- Only packages already listed in the repo's dependencies are bumped — a repo that doesn't use `@enxoval/messaging` won't have it added
+- `package-lock.json` is always updated alongside `package.json` — `npm ci` in CI requires them to be in sync
+- The workflow uses `DUNE_LAB_TOKEN` (a PAT with repo scope) to push branches and open PRs across repos
+
+**How to publish a new version:**
+
+```bash
+# 1. Edit package.json version in the package(s) that changed
+cd enxoval/types
+# bump version field to 1.0.25
+
+# 2. Commit
+git add types/package.json
+git commit -m "feat(types): add field.nullable helper"
+
+# 3. Tag and push — this triggers the full pipeline
+git tag v1.0.25
+git push origin main
+git push origin v1.0.25
+```
+
+The tag version does not need to match any individual package version — it's used only as a label for the bump PRs. npm publish uses each `package.json`'s own `version` field.
 
 ### `asyncFn` pattern
 
