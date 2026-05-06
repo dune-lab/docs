@@ -15,6 +15,7 @@
 | [`@enxoval/auth`](./auth.md) | 1.0.2 | JWT middleware, contexto de usuário |
 | [`@enxoval/observability`](./observability.md) | 1.0.2 | Pino logger, correlation IDs |
 | [`@enxoval/testing`](./testing.md) | 1.0.4 | Vitest + `generate()` + `itCases()` |
+| [`@enxoval/quality`](./quality.md) | 1.0.1 | ESLint + Prettier — `base()`, `boundaries()` |
 
 ---
 
