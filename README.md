@@ -29,8 +29,16 @@
 | [sse.md](./sse.md) | Atualizações em tempo real, EventEmitter in-process, jornadas travadas |
 | [dlq.md](./dlq.md) | Dead Letter Queue (Harkonnen) — mensagens que falharam 3×, reprocess, dismiss |
 | [observability.md](./observability.md) | Grafana, Loki, Pino, dashboards, alertas, LogQL |
-| [enxoval.md](./enxoval.md) | Pacotes `@enxoval/*`, bump automático, `asyncFn`, `AppError` |
 | [running.md](./running.md) | Como subir tudo localmente com Docker Compose |
+| [enxoval/README.md](./enxoval/README.md) | Visão geral dos pacotes `@enxoval/*` e como publicar |
+| [enxoval/types.md](./enxoval/types.md) | `createSchema`, `field.*`, `asyncFn`/`fn`, UUID, `AppError` |
+| [enxoval/http.md](./enxoval/http.md) | Rotas HTTP, SSE, `inject`, error handler |
+| [enxoval/db.md](./enxoval/db.md) | `defineEntity`, `column.*`, data sources, migrations |
+| [enxoval/messaging.md](./enxoval/messaging.md) | Kafka `publish`/`subscribe`, retry automático, DLQ |
+| [enxoval/auth.md](./enxoval/auth.md) | `setupAuth`, `signToken`, `getCurrentUser` |
+| [enxoval/observability.md](./enxoval/observability.md) | `logger`, `newCid`/`nextCid`, correlation IDs |
+| [enxoval/testing.md](./enxoval/testing.md) | `generate()`, `itCases()`, `test.mock`, SQLite in-memory |
+| [enxoval/quality.md](./enxoval/quality.md) | ESLint `base()`, `boundaries()`, Prettier |
 
 ---
 
