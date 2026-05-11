@@ -9,10 +9,10 @@
 | Pacote | Versão | Arquivo |
 |--------|--------|---------|
 | [`@enxoval/types`](./types.md) | 1.0.27 | Schemas, `asyncFn`, erros, UUID |
-| [`@enxoval/http`](./http.md) | 1.0.26 | Fastify wrapper, SSE, error mapping |
+| [`@enxoval/http`](./http.md) | 1.0.27 | Fastify wrapper, SSE, error mapping, cliente HTTP transparente |
 | [`@enxoval/db`](./db.md) | 1.0.3 | TypeORM helpers, data sources, migrations |
 | [`@enxoval/messaging`](./messaging.md) | 1.0.2 | Kafka producer/consumer, DLQ, retry |
-| [`@enxoval/auth`](./auth.md) | 1.0.2 | JWT middleware, contexto de usuário |
+| [`@enxoval/auth`](./auth.md) | 1.0.3 | JWT middleware, X-Service-Token, contexto de usuário |
 | [`@enxoval/observability`](./observability.md) | 1.0.2 | Pino logger, correlation IDs |
 | [`@enxoval/testing`](./testing.md) | 1.0.4 | Vitest + `generate()` + `itCases()` |
 | [`@enxoval/quality`](./quality.md) | 1.0.1 | ESLint + Prettier — `base()`, `boundaries()` |

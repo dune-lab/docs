@@ -4,7 +4,7 @@
 
 ---
 
-## Versão atual: 1.0.2
+## Versão atual: 1.0.3
 
 ---
 
@@ -100,6 +100,36 @@ sseRoute('/journeys/:journeyId/stream', async (params, query, send, signal) => {
 
 ---
 
+## X-Service-Token (autenticação serviço-a-serviço)
+
+Quando um serviço precisa chamar outro fora de um contexto HTTP (ex: consumer Kafka), não há Bearer token disponível no `tokenStorage`. Nesses casos, o `@enxoval/http` injeta o header `X-Service-Token: <JWT_SECRET>`.
+
+O `setupAuth` reconhece esse header e autentica a chamada **sem exigir JWT**:
+
+```
+X-Service-Token: <valor de JWT_SECRET>
+  └─► setupAuth verifica se o valor bate com process.env.JWT_SECRET
+  └─► se bater: request passa como autenticada (getCurrentUser() retorna null)
+  └─► se não bater: 401 Unauthorized
+```
+
+Isso garante que apenas serviços que conhecem o `JWT_SECRET` (configurado via secret compartilhado no Docker Compose / K8s) podem se comunicar sem um token de usuário.
+
+---
+
+## `tokenStorage` (propagação automática de token)
+
+O `setupAuth` alimenta o `tokenStorage` do `@enxoval/http` com o Bearer token de cada request:
+
+```ts
+// Internamente, após verify() com sucesso:
+tokenStorage.enterWith(token);
+```
+
+Isso permite que `call()` do `@enxoval/http` propague o token automaticamente para todas as chamadas downstream feitas durante a mesma request, sem precisar passar o token manualmente.
+
+---
+
 ## Fluxo completo
 
 ```
@@ -110,5 +140,11 @@ sseRoute('/journeys/:journeyId/stream', async (params, query, send, signal) => {
 4. Cliente inclui: Authorization: Bearer <token>
 5. setupAuth preHandler: verify(token, JWT_SECRET)
 6. store.enterWith({ userId, role, token }) via AsyncLocalStorage
-7. Qualquer função chamada durante a request pode: getCurrentUser()
+7. tokenStorage.enterWith(token) — disponível para @enxoval/http call()
+8. Qualquer função chamada durante a request pode: getCurrentUser()
+
+Fluxo Kafka (sem request context):
+9. @enxoval/http call() detecta tokenStorage vazio
+10. Injeta X-Service-Token: JWT_SECRET no header
+11. Serviço destino: setupAuth valida X-Service-Token
 ```

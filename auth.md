@@ -38,6 +38,22 @@ Rotas públicas (ex: `/health`, SSE stream) são excluídas explicitamente no `a
 
 ---
 
+## Autenticação serviço-a-serviço (Kafka flows)
+
+Quando um consumer Kafka precisa chamar outro serviço, não há Bearer token disponível (não existe request HTTP ativa). Nesses casos, o `@enxoval/http` injeta automaticamente o header `X-Service-Token: <JWT_SECRET>`.
+
+O `setupAuth` de cada serviço reconhece esse header e autentica a chamada sem JWT de usuário — desde que o valor bata com o `JWT_SECRET` compartilhado no ambiente.
+
+```
+consumer Kafka → call('getUser', ...) → X-Service-Token: <JWT_SECRET>
+  └─► atreides/setupAuth: valida X-Service-Token
+  └─► request autenticada como chamada interna
+```
+
+Isso é transparente: o código do consumer não precisa fazer nada diferente. O `@enxoval/http` detecta que o `tokenStorage` está vazio e usa o `X-Service-Token` automaticamente.
+
+---
+
 ## Caso especial: SSE
 
 O `EventSource` do browser não suporta header `Authorization`. A rota de stream aceita o token via query param:

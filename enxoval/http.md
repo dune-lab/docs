@@ -4,7 +4,7 @@
 
 ---
 
-## Versão atual: 1.0.26
+## Versão atual: 1.0.27
 
 ---
 
@@ -134,6 +134,103 @@ O Fastify do `@enxoval/http` tem um `setErrorHandler` global:
 | Qualquer outro `Error` | 500 | `{ error: 'InternalServerError', message: 'Internal server error' }` |
 
 **Rotas silenciosas** (sem log): `/health`, `/contracts`, qualquer `OPTIONS`.
+
+---
+
+## Cliente HTTP transparente
+
+Elimina o boilerplate de chamadas HTTP entre serviços: resolve URL, injeta token, substitui path params, converte erros HTTP em `AppError`.
+
+### `defineHttpAliases(schemas)`
+
+Lê `${SERVICE_NAME}.json` do cwd (campo `http`), valida os aliases e retorna uma função `call()` tipada. A leitura é **lazy** — ocorre na primeira chamada a `call()`, não no import.
+
+```ts
+// src/diplomat/http-client/index.ts
+import { defineHttpAliases } from '@enxoval/http';
+import { asyncFn, nullable, field } from '@enxoval/types';
+import { User } from '../model/user';
+import { GetUserIn } from '../wire/in/get-user';
+
+const { call } = defineHttpAliases({
+  getUser: User,
+  listUsers: field.array(User),
+  getProfile: nullable(User),
+});
+
+export const getUser = asyncFn(GetUserIn, User, (input) =>
+  call('getUser', { payload: input }));
+```
+
+### Arquivo de configuração `${SERVICE_NAME}.json`
+
+```json
+{
+  "http": {
+    "getUser":    { "service": "atreides", "method": "GET",  "path": "/users/:userId" },
+    "listUsers":  { "service": "atreides", "method": "GET",  "path": "/users" },
+    "getProfile": { "service": "persona",  "method": "GET",  "path": "/profiles/:id", "nullable": true },
+    "login":      { "service": "janus",    "method": "POST", "path": "/auth/login", "auth": false }
+  },
+  "kafka_topics": {}
+}
+```
+
+| Campo | Descrição |
+|-------|-----------|
+| `service` | Nome do serviço — resolve `${SERVICE.toUpperCase()}_URL` do ambiente |
+| `method` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
+| `path` | Path com params (`:userId`) substituídos pelo payload |
+| `nullable` | Se `true`, retorna `null` em 404 em vez de lançar `NotFoundError` |
+| `auth` | Se `false`, não injeta token de autenticação |
+
+### `call(alias, opts?)`
+
+```ts
+// GET/DELETE — payload vira query string
+await call('listUsers', { payload: { role: 'admin' } });
+// → GET http://atreides:3002/users?role=admin
+
+// POST/PUT/PATCH — payload vira body JSON
+await call('createUser', { payload: { name: 'Ana', email: 'a@b.com' } });
+// → POST http://atreides:3002/users  body: { name, email }
+
+// Path param substituído automaticamente
+await call('getUser', { payload: { userId: '123', role: 'admin' } });
+// → GET http://atreides:3002/users/123?role=admin
+```
+
+### Autenticação automática
+
+| Contexto | Header injetado |
+|----------|----------------|
+| Dentro de um request HTTP (token no `tokenStorage`) | `Authorization: Bearer <token>` |
+| Kafka/messaging (sem request context) | `X-Service-Token: <JWT_SECRET>` |
+| `auth: false` no alias | Nenhum header |
+
+### Mapeamento de erros
+
+| Status HTTP | Exceção lançada |
+|-------------|----------------|
+| 401 | `UnauthorizedError` |
+| 404 (não nullable) | `NotFoundError` |
+| 404 (nullable) | `null` |
+| 409 | `ConflictError` |
+| 422 | `UnprocessableError` |
+| 400 | `ValidationError` |
+
+### `tokenStorage`
+
+`AsyncLocalStorage<string>` exportado por `@enxoval/http`. Armazena o Bearer token da request atual. Alimentado automaticamente pelo `setupAuth` do `@enxoval/auth`; lido por `call()` para propagar auth a downstream.
+
+```ts
+import { tokenStorage } from '@enxoval/http';
+
+// Em testes ou Kafka: injetar token manualmente
+await tokenStorage.run('meu-jwt', async () => {
+  await call('getUser', { payload: { userId: '1' } });
+});
+```
 
 ---
 
